@@ -1,0 +1,29 @@
+cmake_minimum_required(VERSION 3.14)
+project(tokenizer LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Include directories
+include_directories(include)
+include_directories(third_party)
+
+# Oniguruma
+add_subdirectory(third_party/oniguruma)
+include_directories(third_party/oniguruma/src)
+
+# Source files
+set(SOURCES
+    src/tokenizer.cpp
+    third_party/utf8proc/utf8proc.c
+)
+
+# Library
+add_library(tokenizer_lib STATIC ${SOURCES})
+target_include_directories(tokenizer_lib PUBLIC include third_party)
+target_link_libraries(tokenizer_lib onig)
+
+# Executable for testing
+# We link against the library now, so test main only needs tokenizer.hpp
+add_executable(test_main tests/test_main.cpp)
+target_link_libraries(test_main tokenizer_lib)
