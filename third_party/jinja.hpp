@@ -15,19 +15,23 @@
  limitations under the License.
  */
 
-#pragma once
-
 #include <string>
-#include <memory>
 #include <vector>
 #include <map>
 #include <functional>
-#include <algorithm>
+#include <memory>
 #include <sstream>
+#include <algorithm>
 #include <iostream>
+#include <fstream>
+#include <regex>
+#include <initializer_list>
+#include <ctime>
+#include <iomanip>
+#include <chrono>
 
 // External dependency: nlohmann/json
-#include <nlohmann/json.hpp>
+#include "ujson.hpp"
 
 #define JINJA_VERSION_MAJOR 0
 #define JINJA_VERSION_MINOR 0
@@ -42,8 +46,9 @@
 
 namespace jinja {
 
-using json = nlohmann::json;
-using json = nlohmann::json;
+using json = ujson::json;
+
+
 using Argument = std::pair<std::string, json>;
 using UserFunction = std::function<json(const std::vector<Argument>&)>;
 
@@ -558,8 +563,6 @@ private:
 
 
 // --- Helpers ---
-using json = nlohmann::json;
-
 class Context; // Forward declaration
 
 struct Node {
@@ -571,7 +574,12 @@ struct Macro;
 
 // Forward declarations
 static bool is_truthy(const json& val);
-static const json UNDEFINED = {{"__jinja_undefined__", true}};
+static json undefined_init() {
+    json j = json::object();
+    j["__jinja_undefined__"] = true;
+    return j;
+}
+static const json UNDEFINED = undefined_init();
 
 inline bool is_undefined(const json& val) {
     return val.is_object() && val.contains("__jinja_undefined__");
@@ -619,7 +627,7 @@ public:
         return nullptr;
     }
 
-    json& get(const std::string& name) {
+    json get(const std::string& name) {
         // Search from top to bottom
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             if (it->contains(name)) {
@@ -627,19 +635,17 @@ public:
             }
         }
         JINJA_LOG("Context: Variable '" << name << "' not found, returning UNDEFINED");
-        static json undefined_val = UNDEFINED;
-        return undefined_val;
+        return UNDEFINED;
     }
 
-    const json& get(const std::string& name) const {
+    json get(const std::string& name) const {
         // Const version
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             if (it->contains(name)) {
                 return (*it)[name];
             }
         }
-        static const json undefined_val = UNDEFINED;
-        return undefined_val;
+        return UNDEFINED;
     }
 
     void set(const std::string& name, json val) {
@@ -1284,7 +1290,7 @@ struct SetNode : Node {
             // But Expr::evaluate returns value. We need reference.
             // Context needs to support getting reference.
             if (auto* var = dynamic_cast<VarExpr*>(attr->object.get())) {
-                 json& obj = context.get(var->name);
+                 json obj = context.get(var->name);
                  if (!obj.is_null()) {
                      obj[attr->name] = val;
                  }

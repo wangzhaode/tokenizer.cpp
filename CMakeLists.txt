@@ -8,6 +8,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include_directories(include)
 include_directories(third_party)
 
+option(UJSON_USE_RAPIDJSON "Use RapidJSON backend" OFF)
+if(UJSON_USE_RAPIDJSON)
+    add_definitions(-DUJSON_USE_RAPIDJSON)
+    include_directories(third_party/rapidjson/include)
+endif()
+
 # Oniguruma
 add_subdirectory(third_party/oniguruma)
 include_directories(third_party/oniguruma/src)
