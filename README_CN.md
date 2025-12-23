@@ -10,12 +10,10 @@
 
 ## 主要特性
 
-- **HuggingFace 兼容**：直接加载标准的 `tokenizer.json` 文件，无需转换。
-- **全面支持**：支持 BPE (Byte-Pair Encoding), WordPiece, Unigram 算法。
-- **复杂的规范化**：内置 NFKC、Sequence、Prepend、Replace 等多种规范化器。
-- **高级预分词**：支持 ByteLevel、Digits、Split 以及基于 Regex 的复杂切分（完美复刻 GPT-2/4 风格）。
-- **高效轻量**：优化的 C++ 实现，依赖极少。
-- **自包含**：内置经过深度裁剪的 Oniguruma 正则引擎，在保持强大 Unicode 支持的同时最小化体积。
+- **HuggingFace 兼容**：直接加载标准的 `tokenizer.json` 文件。
+- **双 JSON 后端**：通过 `ujson` 桥接同时支持 `nlohmann/json` 和 `RapidJSON`。
+- **高效高性能**：优化的 C++ 实现，使用 RapidJSON 后端可提升约 2 倍加载速度。
+- **轻量自包含**：内置裁剪版 Oniguruma，最小化二进制体积。
 
 ## 支持模型
 
@@ -40,7 +38,10 @@
 ```bash
 mkdir build
 cd build
+# 默认：使用 nlohmann/json
 cmake ..
+# 可选：使用 RapidJSON 提升 2 倍加载速度
+cmake .. -DUJSON_USE_RAPIDJSON=ON
 make
 ```
 
@@ -79,6 +80,18 @@ int main() {
     return 0;
 }
 ```
+
+## 性能测试
+
+本库针对加载速度进行了深度优化，特别是在处理超大模型配置文件时。使用 `RapidJSON` 后端可获得显著性能提升：
+
+| 指标 (41 个模型 / 1691 个测试用例) | nlohmann/json | RapidJSON (via ujson) | 加速比 |
+| :--- | :--- | :--- | :--- |
+| **总计加载时间** | 92.40 s | 47.13 s | **1.96x** |
+| **总计编码时间** | 0.25 s | 0.23 s | 1.07x |
+| **总计总耗时** | 92.65 s | 47.36 s | **1.95x** |
+
+*测试涵盖 41 种不同模型架构。*
 
 ## 文档
 

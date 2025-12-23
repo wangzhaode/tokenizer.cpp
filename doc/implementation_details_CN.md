@@ -49,9 +49,11 @@
 *   **裁剪**: 移除了所有非 UTF-8 编码支持 (EUC-JP, SJIS 等)，移除了 POSIX/GNU 兼容层，仅保留核心正则引擎。
 *   **体积优化**: 使得最终二进制体积增加极小，远小于引入 ICU 或完整版 Oniguruma。
 
-### 2. JSON 加载与兼容性
+### 2. JSON 加载与性能优化
 *   直接解析 HuggingFace 标准的 `tokenizer.json`。
-*   使用 `nlohmann::json` 处理复杂的嵌套配置 (如 `normalizer` 中套 `Sequence` 再套 `Replace`)。
+*   **ujson 桥接**: 引入了 `ujson` 桥接层，允许在 `nlohmann/json` 和 `RapidJSON` 之间灵活切换。
+*   **后端切换**: 开发者可以通过 `UJSON_USE_RAPIDJSON` 宏启用 RapidJSON 后端。
+*   **性能提升**: 在 40+ 模型的大规模测试中，RapidJSON 后端将模型加载时间从 ~92s 降低到 ~47s，实现了近 **2 倍** 的加载性能提升。
 *   针对 `pre_tokenizer` 和 `normalizer` 的多态类型实现了工厂模式加载。
 
 ### 3. Unicode 处理

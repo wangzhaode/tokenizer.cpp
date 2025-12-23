@@ -11,11 +11,9 @@ It provides a high-performance C++ implementation for modern LLM tokenization pi
 ## Features
 
 - **HuggingFace Compatible**: Loads directly from `tokenizer.json`.
-- **Comprehensive Support**: Supports BPE, WordPiece, and Unigram models.
-- **Complex Normalization**: Implements NFKC, Sequence, Prepend, Replace, and more.
-- **Advanced Pre-tokenization**: Supports ByteLevel, Digits, Split, and Regex-based patterns (GPT-2/4 style).
-- **Efficient**: Optimized C++ implementation using minimal dependencies.
-- **Self-Contained**: Includes pruned versions of optimizations like Oniguruma for minimal footprint.
+- **Dual JSON Backend**: Supports both `nlohmann/json` and `RapidJSON` via `ujson` bridge.
+- **Efficient**: Optimized C++ implementation with nearly 2x faster loading using RapidJSON.
+- **Self-Contained**: Includes pruned Oniguruma for minimal footprint.
 
 ## Supported Models
 
@@ -42,7 +40,10 @@ The library allows easy loading and usage of tokenizers.
 ```bash
 mkdir build
 cd build
+# Default: uses nlohmann/json
 cmake ..
+# Optional: use RapidJSON for 2x faster loading
+cmake .. -DUJSON_USE_RAPIDJSON=ON
 make
 ```
 
@@ -81,6 +82,18 @@ int main() {
     return 0;
 }
 ```
+
+## Performance
+
+The library is optimized for loading speed, especially for large models. Using the `RapidJSON` backend provides a significant performance boost:
+
+| Metric (41 Models / 1691 Cases) | nlohmann/json | RapidJSON (via ujson) | Speedup |
+| :--- | :--- | :--- | :--- |
+| **Total Loading Time** | 92.40 s | 47.13 s | **1.96x** |
+| **Total Encode Time** | 0.25 s | 0.23 s | 1.07x |
+| **Total Time** | 92.65 s | 47.36 s | **1.95x** |
+
+*Benchmarks conducted on 41 different model architectures.*
 
 ## Documentation
 

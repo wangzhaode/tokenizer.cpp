@@ -9,9 +9,13 @@
 #include <cmath>
 #include <oniguruma.h>
 #include <utf8proc/utf8proc.h>
+#include <iostream>
+#include "ujson.hpp"
 #include "jinja.hpp"
 
 namespace tokenizer {
+
+using json = ujson::json;
 
 // ==========================================
 // C++11 Polyfills
@@ -87,7 +91,7 @@ static std::string OnigurumaRegexEscape(const std::string& pattern) {
     return escaped;
 }
 
-static std::string get_token_content(const nlohmann::json& j) {
+static std::string get_token_content(const json& j) {
     if (j.is_string()) return j.get<std::string>();
     if (j.is_object() && j.contains("content")) return j["content"].get<std::string>();
     return "";
@@ -560,8 +564,8 @@ public:
         return out;
     }
 
-    void load(const nlohmann::json& v, const nlohmann::json& m) {
-        for (auto it = v.begin(); it != v.end(); ++it) { vocab_[it.key()] = it.value(); id_to_token_[it.value()] = it.key(); }
+    void load(const json& v, const json& m) {
+        for (auto it = v.begin(); it != v.end(); ++it) { vocab_[it.key()] = it.value().get<int>(); id_to_token_[it.value().get<int>()] = it.key(); }
         int rank = 0;
         for (const auto& item : m) {
             std::string s1, s2;
@@ -585,10 +589,10 @@ public:
     WordPieceModel(const std::string& unk = "[UNK]", const std::string& prefix = "##", int max_chars = 100)
         : unk_token_(unk), continuing_subword_prefix_(prefix), max_input_chars_per_word_(max_chars), unk_token_id_(-1) {}
 
-    void load(const nlohmann::json& v) {
+    void load(const json& v) {
         for (auto it = v.begin(); it != v.end(); ++it) {
-            vocab_[it.key()] = it.value();
-            id_to_token_[it.value()] = it.key();
+            vocab_[it.key()] = it.value().get<int>();
+            id_to_token_[it.value().get<int>()] = it.key();
         }
         auto it = vocab_.find(unk_token_);
         if (it != vocab_.end()) unk_token_id_ = it->second;
@@ -659,7 +663,7 @@ public:
     UnigramModel(int unk_id = 0, bool byte_fallback = false)
         : unk_token_id_(unk_id), byte_fallback_(byte_fallback) {}
 
-    void load(const nlohmann::json& v) {
+    void load(const json& v) {
         int idx = 0;
         for (const auto& item : v) {
             if (item.is_array() && item.size() >= 2) {
@@ -1059,7 +1063,7 @@ struct PreTrainedTokenizer::Impl {
         }
     }
 
-    bool load_from_json(PreTrainedTokenizer* public_api, const nlohmann::json& j) {
+    bool load_from_json(PreTrainedTokenizer* public_api, const json& j) {
         if (j.contains("model") && j["model"].is_object()) {
             std::string model_type = j["model"].value("type", "");
             // Auto-detect model type if not specified
@@ -1118,7 +1122,7 @@ struct PreTrainedTokenizer::Impl {
                 if (j["model"].contains("byte_fallback")) byte_fallback = j["model"]["byte_fallback"].get<bool>();
 
                 bool use_byte_level = false;
-                auto check_bl = [](const nlohmann::json& c) -> bool {
+                auto check_bl = [](const json& c) -> bool {
                     if (!c.is_object()) return false;
                     if (c.value("type", "") == "ByteLevel") return true;
                     if (c.contains("pretokenizers")) {
@@ -1132,9 +1136,9 @@ struct PreTrainedTokenizer::Impl {
                     }
                     return false;
                 };
-                if (check_bl(j.value("pre_tokenizer", nlohmann::json()))) use_byte_level = true;
-                if (check_bl(j.value("post_processor", nlohmann::json()))) use_byte_level = true;
-                if (check_bl(j.value("decoder", nlohmann::json()))) use_byte_level = true;
+                if (check_bl(j.value("pre_tokenizer", json()))) use_byte_level = true;
+                if (check_bl(j.value("post_processor", json()))) use_byte_level = true;
+                if (check_bl(j.value("decoder", json()))) use_byte_level = true;
 
                 // If we have a ByteLevelPreTokenizer in the sequence, BPEModel should not do the mapping itself
                 bool pt_has_byte_level = false;
@@ -1151,7 +1155,7 @@ struct PreTrainedTokenizer::Impl {
             }
         }
         if (j.contains("normalizer") && !j["normalizer"].is_null()) {
-            auto create_norm = [&](const nlohmann::json& s) -> std::shared_ptr<Normalizer> {
+            auto create_norm = [&](const json& s) -> std::shared_ptr<Normalizer> {
                 std::string type = s.value("type", "");
                 if (type == "NFKC") return std::make_shared<NFKCNormalizer>();
                 if (type == "Precompiled") {
@@ -1199,7 +1203,7 @@ struct PreTrainedTokenizer::Impl {
             }
         }
         if (j.contains("decoder") && !j["decoder"].is_null()) {
-            auto create_dec = [&](const nlohmann::json& s) -> std::shared_ptr<Decoder> {
+            auto create_dec = [&](const json& s) -> std::shared_ptr<Decoder> {
                 std::string type = s.value("type", "");
                 if (type == "Replace") {
                     std::string p;
@@ -1232,7 +1236,7 @@ struct PreTrainedTokenizer::Impl {
         }
         if (j.contains("pre_tokenizer") && !j["pre_tokenizer"].is_null()) {
             auto pt = j["pre_tokenizer"];
-            auto create_pt = [&](const nlohmann::json& s) -> std::shared_ptr<PreTokenizer> {
+            auto create_pt = [&](const json& s) -> std::shared_ptr<PreTokenizer> {
                 std::string type = s.value("type", "");
                 if (type == "Split") {
                     std::string p;
@@ -1269,10 +1273,10 @@ struct PreTrainedTokenizer::Impl {
         }
         if (j.contains("post_processor") && !j["post_processor"].is_null()) {
             auto pp = j["post_processor"];
-            auto ptl = [&](const nlohmann::json& s) {
+            auto ptl = [&](const json& s) {
                 std::vector<TemplateProcessing::Step> steps;
                 if (s.contains("single")) {
-                    for (auto& i : s["single"]) {
+                    for (const auto& i : s["single"]) {
                         if (i.contains("SpecialToken")) steps.push_back({true, public_api->token_to_id(i["SpecialToken"]["id"].get<std::string>())});
                         else if (i.contains("Sequence")) steps.push_back({false, 0});
                     }
@@ -1280,11 +1284,11 @@ struct PreTrainedTokenizer::Impl {
                 }
             };
             if (pp.value("type", "") == "TemplateProcessing") ptl(pp);
-            else if (pp.value("type", "") == "Sequence" && pp.contains("processors")) { for (auto& s : pp["processors"]) if (s.value("type", "") == "TemplateProcessing") { ptl(s); break; } }
+            else if (pp.value("type", "") == "Sequence" && pp.contains("processors")) { for (const auto& s : pp["processors"]) if (s.value("type", "") == "TemplateProcessing") { ptl(s); break; } }
         }
         if (j.contains("added_tokens") && j["added_tokens"].is_array()) {
             std::vector<std::string> cs;
-            for (auto& item : j["added_tokens"]) {
+            for (const auto& item : j["added_tokens"]) {
                 std::string c = item.value("content", ""); int id = item.value("id", -1);
                 bool special = item.value("special", false);
                 bool lstrip = item.value("lstrip", false);
@@ -1358,30 +1362,29 @@ void PreTrainedTokenizer::set_chat_template(const std::string& t) {
     impl_->chat_template_ = t;
     impl_->jinja_template_ = std::make_shared<jinja::Template>(t);
 }
-
 std::string PreTrainedTokenizer::apply_chat_template(const ChatMessages& msgs, bool add_gen) const {
     if (!impl_->jinja_template_) return "";
-    nlohmann::json j_msgs = nlohmann::json::array();
+    json j_msgs = json::array();
     for (const auto& m : msgs) j_msgs.push_back({{"role", m.first}, {"content", m.second}});
-    nlohmann::json extra;
+    json extra = json::object();
     extra["bos_token"] = id_to_token(impl_->special_tokens_.bos);
     extra["eos_token"] = id_to_token(impl_->special_tokens_.eos);
-    return impl_->jinja_template_->apply_chat_template(j_msgs, add_gen, nlohmann::json::array(), extra);
+    return impl_->jinja_template_->apply_chat_template(j_msgs, add_gen, json::array(), extra);
 }
 
 std::string PreTrainedTokenizer::apply_chat_template(const std::string& json_str, bool add_generation_prompt) const {
     if (!impl_->jinja_template_) return "";
-    auto j_msgs = nlohmann::json::parse(json_str, nullptr, false);
+    auto j_msgs = json::parse(json_str);
     if (!j_msgs.is_array()) return "";
-    nlohmann::json extra;
+    json extra = json::object();
     extra["bos_token"] = id_to_token(impl_->special_tokens_.bos);
     extra["eos_token"] = id_to_token(impl_->special_tokens_.eos);
-    return impl_->jinja_template_->apply_chat_template(j_msgs, add_generation_prompt, nlohmann::json::array(), extra);
+    return impl_->jinja_template_->apply_chat_template(j_msgs, add_generation_prompt, json::array(), extra);
 }
 
 bool PreTrainedTokenizer::load_from_json_str(const std::string& json_str) {
-    auto j = nlohmann::json::parse(json_str, nullptr, false);
-    if (j.is_discarded()) return false;
+    auto j = json::parse(json_str);
+    if (j.is_null()) return false;
     return impl_->load_from_json(this, j);
 }
 
@@ -1396,16 +1399,20 @@ void PreTrainedTokenizer::set_clean_up_tokenization_spaces(bool clean) {
     std::shared_ptr<PreTrainedTokenizer> AutoTokenizer::from_pretrained(const std::string& path) {
         auto tok = std::make_shared<PreTrainedTokenizer>();
         std::ifstream f(path + "/tokenizer.json"); if (!f.is_open()) return nullptr;
-        nlohmann::json j; f >> j;
+        std::stringstream ss_j; ss_j << f.rdbuf();
+        json j = json::parse(ss_j.str());
+        if (j.is_null()) return nullptr;
+
         std::ifstream fc(path + "/tokenizer_config.json");
         bool clean_up_spaces = false;
         if (fc.is_open()) {
-            nlohmann::json jc; fc >> jc; if (jc.contains("chat_template")) tok->set_chat_template(jc["chat_template"].get<std::string>());
+            std::stringstream ss_jc; ss_jc << fc.rdbuf();
+            json jc = json::parse(ss_jc.str());
+            if (jc.contains("chat_template")) tok->set_chat_template(jc["chat_template"].get<std::string>());
             clean_up_spaces = jc.value("clean_up_tokenization_spaces", false);
             j["config_overrides"] = jc;
         }
-        std::stringstream ss; ss << j;
-        if (!tok->load_from_json_str(ss.str())) return nullptr;
+        if (!tok->load_from_json_str(j.dump())) return nullptr;
         tok->set_clean_up_tokenization_spaces(clean_up_spaces);
         return tok;
     }

@@ -84,7 +84,7 @@ public:
                 std::string ks = v[0].get<std::string>();
                 k.SetString(ks.c_str(), static_cast<rapidjson::SizeType>(ks.length()), m_doc->GetAllocator());
                 rapidjson::Value val_copy;
-                val_copy.CopyFrom(*(v.m_val), m_doc->GetAllocator());
+                val_copy.CopyFrom(*(v[1].m_val), m_doc->GetAllocator());
                 m_val->AddMember(k, val_copy, m_doc->GetAllocator());
             }
         } else {
@@ -407,6 +407,31 @@ struct json_getter<std::vector<T>> {
     }
 };
 
+template<typename T>
+struct json_getter<std::map<std::string, T>> {
+    static std::map<std::string, T> get(const json& j) {
+        std::map<std::string, T> res;
+        if (j.is_object()) {
+            for (auto it = j.begin(); it != j.end(); ++it) {
+                res[it.key()] = it.value().template get<T>();
+            }
+        }
+        return res;
+    }
+};
+
+template<> struct json_getter<json> { static json get(const json& j) { return j; } };
+template<> struct json_getter<std::vector<json>> {
+    static std::vector<json> get(const json& j) {
+        std::vector<json> res;
+        if (j.is_array()) {
+            res.reserve(j.size());
+            for (auto it = j.begin(); it != j.end(); ++it) res.push_back(*it);
+        }
+        return res;
+    }
+};
+
 #else // !UJSON_USE_RAPIDJSON -> nlohmann/json implementation (view-based)
 
 class json {
@@ -446,7 +471,7 @@ public:
         if (is_obj && init.size() > 0) {
             *m_val = nlohmann_json::object();
             for (const auto& v : init) {
-                (*m_val)[v[0].get<std::string>()] = *(v.m_val);
+                (*m_val)[v[0].get<std::string>()] = *(v[1].m_val);
             }
         } else {
             *m_val = nlohmann_json::array();
@@ -509,7 +534,19 @@ public:
 
     template<typename T>
     T value(const std::string& key, const T& default_value) const {
-        return m_val->value(key, default_value);
+        auto it = m_val->find(key);
+        if (it != m_val->end()) {
+            return json(m_doc, const_cast<nlohmann_json*>(&(*it))).get<T>();
+        }
+        return default_value;
+    }
+
+    json value(const std::string& key, const json& default_value) const {
+        auto it = m_val->find(key);
+        if (it != m_val->end()) {
+            return json(m_doc, const_cast<nlohmann_json*>(&(*it)));
+        }
+        return default_value;
     }
 
     std::string value(const std::string& key, const char* default_value) const {

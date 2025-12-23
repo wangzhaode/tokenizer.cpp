@@ -18,9 +18,9 @@
 #include "tokenizer.hpp"
 
 #include <utf8proc/utf8proc.h>
-#include <nlohmann/json.hpp>
+#include "ujson.hpp"
 
-using json = nlohmann::json;
+using json = ujson::json;
 
 // ==================== 颜色定义 ====================
 namespace Color {
