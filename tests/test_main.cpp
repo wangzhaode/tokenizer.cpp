@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <chrono>
 #include "tokenizer.hpp"
 
 #include <utf8proc/utf8proc.h>
@@ -32,6 +33,10 @@ namespace Color {
     const std::string BOLD    = "\033[1m";
     const std::string GREY    = "\033[90m";
 }
+
+// ==================== 全局统计 ====================
+double g_total_load_ms = 0;
+double g_total_encode_ms = 0;
 
 // 计算字符串在终端显示的视觉宽度，跳过 ANSI 转义序列，处理 ZWJ Emoji 序列
 int get_display_width(const std::string& str) {
@@ -137,7 +142,11 @@ bool run_basic_test(tokenizer::PreTrainedTokenizer* tok, const json& test_case, 
     std::vector<int> expected_ids = test_case["ids_raw"].get<std::vector<int>>();
 
     // 1. 测试 Encode
+    auto start = std::chrono::high_resolution_clock::now();
     std::vector<int> result = tok->encode(input, false);
+    auto end = std::chrono::high_resolution_clock::now();
+    g_total_encode_ms += std::chrono::duration<double, std::milli>(end - start).count();
+
     bool ids_match = (result == expected_ids);
 
     // 2. 测试 Decode
@@ -183,8 +192,8 @@ bool run_chat_test(tokenizer::PreTrainedTokenizer* tok, const json& test_case, b
     std::vector<int> expected_ids = test_case["ids"].get<std::vector<int>>();
     bool add_gen_prompt = test_case.value("add_generation_prompt", false);
 
-    std::string result_text; // Declare result_text
-    tokenizer::ChatMessages messages; // Declare messages
+    std::string result_text;
+    tokenizer::ChatMessages messages;
     bool has_complex = false;
     if (test_case["messages"].is_array()) {
         for (const auto& msg : test_case["messages"]) {
@@ -194,6 +203,8 @@ bool run_chat_test(tokenizer::PreTrainedTokenizer* tok, const json& test_case, b
             }
         }
     }
+
+    auto start = std::chrono::high_resolution_clock::now();
     if (has_complex) {
         result_text = tok->apply_chat_template(test_case["messages"].dump(), add_gen_prompt);
     } else {
@@ -205,6 +216,9 @@ bool run_chat_test(tokenizer::PreTrainedTokenizer* tok, const json& test_case, b
 
     // 2. 比较生成的 Tokens
     std::vector<int> result_ids = tok->encode(result_text, false);
+    auto end = std::chrono::high_resolution_clock::now();
+    g_total_encode_ms += std::chrono::duration<double, std::milli>(end - start).count();
+
     bool ids_match = (result_ids == expected_ids);
 
     if (text_match && ids_match) {
@@ -240,11 +254,15 @@ TestResult run_model_tests(const std::string& model_path, const std::string& mod
     TestResult result;
 
     // 1. 加载 tokenizer
+    auto start = std::chrono::high_resolution_clock::now();
     auto tok = tokenizer::AutoTokenizer::from_pretrained(model_path);
+    auto end = std::chrono::high_resolution_clock::now();
+
     if (!tok) {
         std::cout << Color::RED << "  ❌ Failed to load tokenizer" << Color::RESET << std::endl;
         return result;
     }
+    g_total_load_ms += std::chrono::duration<double, std::milli>(end - start).count();
 
     // 2. 加载 test_cases.jsonl
     std::string cases_path = model_path + "/test_cases.jsonl";
@@ -461,10 +479,18 @@ int main(int argc, char** argv) {
         for (const auto& m : failed_models) {
             std::cout << Color::RED << "  - " << m << Color::RESET << std::endl;
         }
+        std::cout << "--------------------------------------------------" << std::endl;
+        std::cout << " Total Loading Time: " << std::fixed << std::setprecision(2) << g_total_load_ms << " ms" << std::endl;
+        std::cout << " Total Encode Time : " << std::fixed << std::setprecision(2) << g_total_encode_ms << " ms" << std::endl;
+        std::cout << " Total Time        : " << std::fixed << std::setprecision(2) << (g_total_load_ms + g_total_encode_ms) << " ms" << std::endl;
         return 1;
     } else {
         std::cout << Color::GREEN << " Failed        : 0" << Color::RESET << std::endl;
         std::cout << "\n✨ All tests passed! ✨" << std::endl;
+        std::cout << "--------------------------------------------------" << std::endl;
+        std::cout << " Total Loading Time: " << std::fixed << std::setprecision(2) << g_total_load_ms << " ms" << std::endl;
+        std::cout << " Total Encode Time : " << std::fixed << std::setprecision(2) << g_total_encode_ms << " ms" << std::endl;
+        std::cout << " Total Time        : " << std::fixed << std::setprecision(2) << (g_total_load_ms + g_total_encode_ms) << " ms" << std::endl;
         return 0;
     }
 }
