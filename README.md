@@ -37,7 +37,7 @@ The library allows easy loading and usage of tokenizers.
 
 **Prerequisites**:
 - CMake 3.10+
-- C++17 compatible compiler
+- C++11 compatible compiler
 
 ```bash
 mkdir build
