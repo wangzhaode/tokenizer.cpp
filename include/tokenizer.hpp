@@ -45,7 +45,6 @@ public:
     // --- Chat Template ---
     void set_chat_template(const std::string& template_str);
 
-    // Applies Jinja2-like template to messages
     std::string apply_chat_template(
         const ChatMessages& messages,
         bool add_generation_prompt = true
@@ -57,8 +56,6 @@ public:
     ) const;
 
     // --- Loading ---
-    // Load config from a JSON string content (not file path)
-    // The caller handles file I/O.
     bool load_from_json_str(const std::string& json_content);
 
 private:
@@ -71,7 +68,6 @@ private:
 // ==========================================
 class AutoTokenizer {
 public:
-    // Helper that loads file content and calls load_from_json_str
     static std::shared_ptr<PreTrainedTokenizer> from_pretrained(const std::string& path);
 };
 
