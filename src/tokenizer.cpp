@@ -69,6 +69,7 @@ class Decoder {
 public:
     virtual ~Decoder() = default;
     virtual void decode(std::vector<std::string>& tokens) const = 0;
+    virtual void set_clean_up_tokenization_spaces(bool clean) {}
 };
 
 // ==========================================
@@ -206,6 +207,88 @@ public:
     }
 };
 
+class BertNormalizer : public Normalizer {
+    bool clean_text_, handle_chinese_chars_, strip_accents_, lowercase_;
+public:
+    BertNormalizer(bool clean = true, bool chinese = true, bool accents = false, bool lower = true)
+        : clean_text_(clean), handle_chinese_chars_(chinese), strip_accents_(accents), lowercase_(lower) {}
+
+    std::string normalize(const std::string& text) const override {
+        std::string out;
+        const uint8_t* ptr = (const uint8_t*)text.c_str();
+        size_t len = text.length(), i = 0;
+        int32_t cp;
+        while (i < len) {
+            ssize_t r = utf8proc_iterate(ptr + i, len - i, &cp);
+            if (r <= 0) { i++; continue; }
+            std::string ch((const char*)ptr + i, r);
+
+            // Clean text: remove control chars, replace whitespace
+            if (clean_text_) {
+                if (cp == '\t' || cp == '\n' || cp == '\r' || utf8proc_category(cp) == UTF8PROC_CATEGORY_ZS) {
+                    out += ' '; i += r; continue;
+                }
+                if (cp == 0 || cp == 0xFFFD || utf8proc_category(cp) == UTF8PROC_CATEGORY_CC) { i += r; continue; }
+            }
+
+            // Handle Chinese chars: pad with spaces
+            if (handle_chinese_chars_ && is_chinese_char(cp)) {
+                out += ' '; out += ch; out += ' ';
+                i += r; continue;
+            }
+
+            // Strip accents: decompose and skip combining marks
+            if (strip_accents_) {
+                uint8_t* decomposed = nullptr;
+                ssize_t dlen = utf8proc_map(ptr + i, r, &decomposed, (utf8proc_option_t)(UTF8PROC_DECOMPOSE));
+                if (dlen > 0 && decomposed) {
+                    for (ssize_t j = 0; decomposed[j] != 0;) {
+                        int32_t dcp;
+                        ssize_t dr = utf8proc_iterate(decomposed + j, -1, &dcp);
+                        if (dr <= 0) break;
+                        if (utf8proc_category(dcp) != UTF8PROC_CATEGORY_MN) {
+                            out.append((const char*)decomposed + j, dr);
+                        }
+                        j += dr;
+                    }
+                    free(decomposed);
+                    i += r; continue;
+                }
+            }
+
+            out += ch;
+            i += r;
+        }
+        // Lowercase if needed
+        if (lowercase_) {
+            std::string lower_out;
+            ptr = (const uint8_t*)out.c_str();
+            len = out.length(); i = 0;
+            while (i < len) {
+                ssize_t r = utf8proc_iterate(ptr + i, len - i, &cp);
+                if (r <= 0) { lower_out += out[i++]; continue; }
+                int32_t lc = utf8proc_tolower(cp);
+                char buf[8]; int n = 0;
+                if (lc <= 0x7F) { buf[n++] = (char)lc; }
+                else if (lc <= 0x7FF) { buf[n++] = (char)(0xC0 | (lc >> 6)); buf[n++] = (char)(0x80 | (lc & 0x3F)); }
+                else if (lc <= 0xFFFF) { buf[n++] = (char)(0xE0 | (lc >> 12)); buf[n++] = (char)(0x80 | ((lc >> 6) & 0x3F)); buf[n++] = (char)(0x80 | (lc & 0x3F)); }
+                else { buf[n++] = (char)(0xF0 | (lc >> 18)); buf[n++] = (char)(0x80 | ((lc >> 12) & 0x3F)); buf[n++] = (char)(0x80 | ((lc >> 6) & 0x3F)); buf[n++] = (char)(0x80 | (lc & 0x3F)); }
+                lower_out.append(buf, n);
+                i += r;
+            }
+            return lower_out;
+        }
+        return out;
+    }
+private:
+    static bool is_chinese_char(int32_t cp) {
+        return (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF) ||
+               (cp >= 0x20000 && cp <= 0x2A6DF) || (cp >= 0x2A700 && cp <= 0x2B73F) ||
+               (cp >= 0x2B740 && cp <= 0x2B81F) || (cp >= 0x2B820 && cp <= 0x2CEAF) ||
+               (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x2F800 && cp <= 0x2FA1F);
+    }
+};
+
 class SequencePreTokenizer : public PreTokenizer {
 public:
     std::vector<std::shared_ptr<PreTokenizer>> pts_;
@@ -292,10 +375,10 @@ public:
     bool add_prefix_space_;
     MetaspacePreTokenizer(const std::string& rep, bool aps) : replacement_(rep), add_prefix_space_(aps) {}
     void pre_tokenize(PreTokenizedString& pts) const override {
-        if (add_prefix_space_ && !pts.splits.empty() && !pts.splits[0].empty() && pts.splits[0][0] != ' ') {
-            pts.splits[0] = " " + pts.splits[0];
-        }
         for (auto& s : pts.splits) {
+            if (add_prefix_space_ && !s.empty() && s[0] != ' ') {
+                s = " " + s;
+            }
             std::string out;
             for (size_t i = 0; i < (int)s.size();) {
                 int32_t cp;
@@ -353,6 +436,46 @@ public:
                     break;
                 }
             }
+        }
+        pts.splits = new_splits;
+    }
+};
+
+class BertPreTokenizer : public PreTokenizer {
+public:
+    void pre_tokenize(PreTokenizedString& pts) const override {
+        std::vector<std::string> new_splits;
+        for (const auto& s : pts.splits) {
+            std::string current;
+            const uint8_t* ptr = (const uint8_t*)s.c_str();
+            size_t len = s.length(), i = 0;
+            int32_t cp;
+            while (i < len) {
+                ssize_t r = utf8proc_iterate(ptr + i, len - i, &cp);
+                if (r <= 0) { i++; continue; }
+                std::string ch((const char*)ptr + i, r);
+                bool is_whitespace = (cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' ||
+                                      utf8proc_category(cp) == UTF8PROC_CATEGORY_ZS);
+                bool is_punctuation = utf8proc_category(cp) == UTF8PROC_CATEGORY_PD ||
+                                      utf8proc_category(cp) == UTF8PROC_CATEGORY_PS ||
+                                      utf8proc_category(cp) == UTF8PROC_CATEGORY_PE ||
+                                      utf8proc_category(cp) == UTF8PROC_CATEGORY_PC ||
+                                      utf8proc_category(cp) == UTF8PROC_CATEGORY_PO ||
+                                      utf8proc_category(cp) == UTF8PROC_CATEGORY_PI ||
+                                      utf8proc_category(cp) == UTF8PROC_CATEGORY_PF ||
+                                      (cp >= 33 && cp <= 47) || (cp >= 58 && cp <= 64) ||
+                                      (cp >= 91 && cp <= 96) || (cp >= 123 && cp <= 126);
+                if (is_whitespace) {
+                    if (!current.empty()) { new_splits.push_back(current); current.clear(); }
+                } else if (is_punctuation) {
+                    if (!current.empty()) { new_splits.push_back(current); current.clear(); }
+                    new_splits.push_back(ch);
+                } else {
+                    current += ch;
+                }
+                i += r;
+            }
+            if (!current.empty()) new_splits.push_back(current);
         }
         pts.splits = new_splits;
     }
@@ -451,6 +574,212 @@ public:
     }
 };
 
+class WordPieceModel : public Model {
+    std::string unk_token_;
+    std::string continuing_subword_prefix_;
+    int max_input_chars_per_word_;
+    std::unordered_map<std::string, int> vocab_;
+    std::unordered_map<int, std::string> id_to_token_;
+    int unk_token_id_;
+public:
+    WordPieceModel(const std::string& unk = "[UNK]", const std::string& prefix = "##", int max_chars = 100)
+        : unk_token_(unk), continuing_subword_prefix_(prefix), max_input_chars_per_word_(max_chars), unk_token_id_(-1) {}
+
+    void load(const nlohmann::json& v) {
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            vocab_[it.key()] = it.value();
+            id_to_token_[it.value()] = it.key();
+        }
+        auto it = vocab_.find(unk_token_);
+        if (it != vocab_.end()) unk_token_id_ = it->second;
+    }
+
+    int token_to_id(const std::string& token) const override {
+        auto it = vocab_.find(token);
+        return (it != vocab_.end()) ? it->second : unk_token_id_;
+    }
+
+    std::string id_to_token(int id) const override {
+        auto it = id_to_token_.find(id);
+        return (it != id_to_token_.end()) ? it->second : unk_token_;
+    }
+
+    size_t vocab_size() const override { return vocab_.size(); }
+
+    std::vector<int> tokenize(const std::string& text) const override {
+        if (text.empty()) return {};
+        // If word is too long, return unk
+        if ((int)text.length() > max_input_chars_per_word_) {
+            return unk_token_id_ != -1 ? std::vector<int>{unk_token_id_} : std::vector<int>{};
+        }
+        std::vector<int> out;
+        size_t start = 0;
+        bool is_bad = false;
+
+        while (start < text.length()) {
+            size_t end = text.length();
+            int cur_id = -1;
+
+            // Greedy match
+            while (end > start) {
+                std::string substr = text.substr(start, end - start);
+                if (start > 0) substr = continuing_subword_prefix_ + substr;
+                auto it = vocab_.find(substr);
+                if (it != vocab_.end()) {
+                    cur_id = it->second;
+                    break;
+                }
+                end--;
+            }
+
+            if (cur_id == -1) {
+                is_bad = true;
+                break;
+            } else {
+                out.push_back(cur_id);
+                start = end;
+            }
+        }
+
+        if (is_bad) return { unk_token_id_ };
+        return out;
+    }
+};
+
+class UnigramModel : public Model {
+    std::string unk_token_;
+    int unk_token_id_;
+    std::unordered_map<std::string, int> vocab_;
+    std::unordered_map<int, std::string> id_to_token_;
+    std::vector<double> scores_;
+    bool byte_fallback_;
+    size_t max_token_len_ = 0;
+
+public:
+    UnigramModel(int unk_id = 0, bool byte_fallback = false)
+        : unk_token_id_(unk_id), byte_fallback_(byte_fallback) {}
+
+    void load(const nlohmann::json& v) {
+        int idx = 0;
+        for (const auto& item : v) {
+            if (item.is_array() && item.size() >= 2) {
+                std::string token = item[0].get<std::string>();
+                double score = item[1].get<double>();
+                vocab_[token] = idx;
+                id_to_token_[idx] = token;
+                scores_.push_back(score);
+                if (token.length() > max_token_len_) max_token_len_ = token.length();
+                if (idx == unk_token_id_) unk_token_ = token;
+                idx++;
+            }
+        }
+    }
+
+    int token_to_id(const std::string& token) const override {
+        auto it = vocab_.find(token);
+        return (it != vocab_.end()) ? it->second : unk_token_id_;
+    }
+
+    std::string id_to_token(int id) const override {
+        auto it = id_to_token_.find(id);
+        return (it != id_to_token_.end()) ? it->second : unk_token_;
+    }
+
+    size_t vocab_size() const override { return vocab_.size(); }
+
+    std::vector<int> tokenize(const std::string& text) const override {
+        if (text.empty()) return {};
+
+        size_t n = text.length();
+        std::vector<double> best_scores(n + 1, -1e18);
+        std::vector<int> best_ids(n + 1, -1);
+        std::vector<size_t> best_prev_pos(n + 1, 0);
+
+        best_scores[0] = 0.0;
+
+        for (size_t i = 1; i <= n; ++i) {
+            size_t start_len = (i > max_token_len_) ? (i - max_token_len_) : 0;
+            for (size_t j = i - 1; j != (size_t)-1 && j >= start_len; --j) { // Iterate backwards from i-1
+                if (best_scores[j] <= -1e17) continue;
+
+                std::string sub = text.substr(j, i - j);
+                auto it = vocab_.find(sub);
+
+                int token_id = -1;
+                double score = -1e18;
+
+                if (it != vocab_.end()) {
+                    token_id = it->second;
+                    score = scores_[token_id];
+                } else if (byte_fallback_ && (i - j) == 1) {
+                     unsigned char b = (unsigned char)text[j];
+                     char buf[16];
+                     snprintf(buf, sizeof(buf), "<0x%02X>", b);
+                     auto bf_it = vocab_.find(buf);
+                     if (bf_it != vocab_.end()) {
+                         token_id = bf_it->second;
+                         score = scores_[token_id];
+                     } else {
+                         token_id = unk_token_id_;
+                         score = (unk_token_id_ < (int)scores_.size()) ? scores_[unk_token_id_] : -10.0;
+                     }
+                } else {
+                     continue;
+                }
+
+                double new_score = best_scores[j] + score;
+                if (new_score > best_scores[i] || best_scores[i] <= -1e17) {
+                    best_scores[i] = new_score;
+                    best_prev_pos[i] = j;
+                    best_ids[i] = token_id;
+                }
+            }
+
+            // If unreachable, force greedy step with UNK as fallback if everything failed
+            // (Only if not byte fallback, or byte fallback failed to match)
+            if (best_scores[i] <= -1e17) {
+                // Try to find the start of the current character (UTF-8)
+                int char_len = 1;
+                for (int k = 1; k <= 4 && (int)i - k >= 0; ++k) {
+                    unsigned char c = (unsigned char)text[i - k];
+                    if ((c & 0xC0) != 0x80) { // Start byte or ASCII
+                        int expected = 1;
+                        if (c >= 0xF0) expected = 4;
+                        else if (c >= 0xE0) expected = 3;
+                        else if (c >= 0xC0) expected = 2;
+
+                        if (expected == k) char_len = k;
+                        break;
+                    }
+                }
+
+                 double prev_score = best_scores[i-char_len];
+                 if (prev_score > -1e17) {
+                     double unk_score = (unk_token_id_ < (int)scores_.size()) ? scores_[unk_token_id_] : -10.0;
+                     best_scores[i] = prev_score + unk_score;
+                     best_prev_pos[i] = i - char_len;
+                     best_ids[i] = unk_token_id_;
+                 }
+            }
+        }
+
+        std::vector<int> out;
+        if (best_scores[n] <= -1e17) return {};
+
+        size_t cur = n;
+        while (cur > 0) {
+             int id = best_ids[cur];
+             // Merge contiguous UNKs
+             if (out.empty() || id != unk_token_id_ || out.back() != unk_token_id_) {
+                 out.push_back(id);
+             }
+             cur = best_prev_pos[cur];
+        }
+        std::reverse(out.begin(), out.end());
+        return out;
+    }
+};
+
 class TemplateProcessing : public PostProcessor {
 public:
     struct Step { bool is_token; int id; };
@@ -466,6 +795,8 @@ public:
         enc.attention_mask.assign(out.size(), 1);
     }
 };
+
+
 
 class ReplaceDecoder : public Decoder {
     std::string pattern_, content_;
@@ -546,6 +877,83 @@ public:
     }
 };
 
+class WordPieceDecoder : public Decoder {
+    std::string prefix_;
+    bool cleanup_;
+public:
+    WordPieceDecoder(const std::string& prefix = "##", bool cleanup = true) : prefix_(prefix), cleanup_(cleanup) {}
+
+    void set_clean_up_tokenization_spaces(bool clean) override {
+        cleanup_ = clean;
+    }
+
+    void decode(std::vector<std::string>& tokens) const override {
+        std::string out;
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            std::string token = tokens[i];
+            bool is_suffix = (token.rfind(prefix_, 0) == 0);
+            if (is_suffix) token = token.substr(prefix_.length());
+
+            if (i == 0) {
+                out += token;
+            } else {
+                bool add_space = true;
+                if (is_suffix) add_space = false;
+                else {
+                    char first_char = token.empty() ? 0 : token[0];
+                    // Always clean basic punctuation
+                    if (strchr(".,!?", first_char)) add_space = false;
+
+                    if (cleanup_) {
+                        // Clean extended punctuation if enabled
+                        if (first_char == '\'') add_space = false;
+
+                        // No space after single quote
+                        if (add_space && !out.empty()) {
+                             char last_char = out.back();
+                             if (last_char == '\'') add_space = false;
+                        }
+                    }
+                }
+
+                if (add_space) out += " ";
+                out += token;
+            }
+        }
+        tokens.clear();
+        tokens.push_back(out);
+    }
+};
+
+
+
+class MetaspaceDecoder : public Decoder {
+    std::string replacement_;
+    bool add_prefix_space_;
+public:
+    MetaspaceDecoder(const std::string& rep = "▁", bool aps = true) : replacement_(rep), add_prefix_space_(aps) {}
+    void decode(std::vector<std::string>& tokens) const override {
+        for (auto& t : tokens) {
+            std::string out;
+            size_t i = 0;
+            while (i < t.length()) {
+                if (t.substr(i, replacement_.length()) == replacement_) {
+                    out += " ";
+                    i += replacement_.length();
+                } else {
+                    out += t[i++];
+                }
+            }
+            t = out;
+        }
+        if (add_prefix_space_ && !tokens.empty()) {
+            if (!tokens[0].empty() && tokens[0][0] == ' ') {
+                tokens[0] = tokens[0].substr(1);
+            }
+        }
+    }
+};
+
 class SequenceDecoder : public Decoder {
     std::vector<std::shared_ptr<Decoder>> decoders_;
 public:
@@ -553,7 +961,11 @@ public:
     void decode(std::vector<std::string>& tokens) const override {
         for (const auto& d : decoders_) d->decode(tokens);
     }
+    void set_clean_up_tokenization_spaces(bool clean) override {
+        for (const auto& d : decoders_) d->set_clean_up_tokenization_spaces(clean);
+    }
 };
+
 
 class CoreDecoder : public Decoder {
 public:
@@ -628,85 +1040,150 @@ struct PreTrainedTokenizer::Impl {
 
                 // 3. Pre-tokenize and model tokenize
                 PreTokenizedString pts; pts.splits.push_back(normalized);
+
                 if (pre_tokenizer_) pre_tokenizer_->pre_tokenize(pts);
+
                 for (const auto& s : pts.splits) {
                     auto ids = model_->tokenize(s);
                     input_ids.insert(input_ids.end(), ids.begin(), ids.end());
                 }
             }
         }
-
         if (add_special_tokens && special_tokens_.eos != -1) input_ids.push_back(special_tokens_.eos);
         return input_ids;
     }
 
+    void set_clean_up_tokenization_spaces(bool clean) {
+        if (decoder_) {
+            decoder_->set_clean_up_tokenization_spaces(clean);
+        }
+    }
+
     bool load_from_json(PreTrainedTokenizer* public_api, const nlohmann::json& j) {
-        if (j.contains("model")) {
-            auto vocab = j["model"]["vocab"].get<std::map<std::string, int>>();
-            std::map<std::pair<int, int>, int> merges;
-            if (j["model"].contains("merges")) {
-                int rank = 0;
-                for (const auto& item : j["model"]["merges"]) {
-                    std::string s1, s2;
-                    if (item.is_string()) {
-                        std::string line = item.get<std::string>();
-                        size_t pos = line.find(' ');
-                        if (pos != std::string::npos) { s1 = line.substr(0, pos); s2 = line.substr(pos + 1); }
-                    } else if (item.is_array() && item.size() >= 2) {
-                        s1 = item[0].get<std::string>();
-                        s2 = item[1].get<std::string>();
+        if (j.contains("model") && j["model"].is_object()) {
+            std::string model_type = j["model"].value("type", "");
+            // Auto-detect model type if not specified
+            if (model_type.empty()) {
+                if (j["model"].contains("vocab") && j["model"]["vocab"].is_array()) {
+                    model_type = "Unigram";
+                } else if (j["model"].contains("continuing_subword_prefix") ||
+                    (j["model"].contains("vocab") && j["model"]["vocab"].is_object() && !j["model"].contains("merges"))) {
+                    model_type = "WordPiece";
+                } else {
+                    model_type = "BPE";
+                }
+            }
+
+            if (model_type == "WordPiece") {
+                // WordPiece model
+                std::string unk_token = j["model"].value("unk_token", "[UNK]");
+                std::string prefix = j["model"].value("continuing_subword_prefix", "##");
+                int max_chars = j["model"].value("max_input_chars_per_word", 100);
+                auto wp = std::make_shared<WordPieceModel>(unk_token, prefix, max_chars);
+                if (j["model"].contains("vocab")) {
+                    wp->load(j["model"]["vocab"]);
+                }
+                this->model_ = wp;
+            } else if (model_type == "Unigram") {
+                // Unigram model
+                int unk_id = j["model"].value("unk_id", 0);
+                bool byte_fallback = j["model"].value("byte_fallback", false);
+                auto ug = std::make_shared<UnigramModel>(unk_id, byte_fallback);
+                if (j["model"].contains("vocab") && j["model"]["vocab"].is_array()) {
+                    ug->load(j["model"]["vocab"]);
+                }
+                this->model_ = ug;
+            } else {
+                // BPE model (default)
+                auto vocab = j["model"]["vocab"].get<std::map<std::string, int>>();
+                std::map<std::pair<int, int>, int> merges;
+                if (j["model"].contains("merges")) {
+                    int rank = 0;
+                    for (const auto& item : j["model"]["merges"]) {
+                        std::string s1, s2;
+                        if (item.is_string()) {
+                            std::string line = item.get<std::string>();
+                            size_t pos = line.find(' ');
+                            if (pos != std::string::npos) { s1 = line.substr(0, pos); s2 = line.substr(pos + 1); }
+                        } else if (item.is_array() && item.size() >= 2) {
+                            s1 = item[0].get<std::string>();
+                            s2 = item[1].get<std::string>();
+                        }
+                        if (!s1.empty() && !s2.empty() && vocab.count(s1) && vocab.count(s2))
+                            merges[{vocab[s1], vocab[s2]}] = rank++;
                     }
-                    if (!s1.empty() && !s2.empty() && vocab.count(s1) && vocab.count(s2))
-                        merges[{vocab[s1], vocab[s2]}] = rank++;
                 }
+                std::map<std::string, int> added_tokens;
+                bool byte_fallback = false;
+                if (j["model"].contains("byte_fallback")) byte_fallback = j["model"]["byte_fallback"].get<bool>();
+
+                bool use_byte_level = false;
+                auto check_bl = [](const nlohmann::json& c) -> bool {
+                    if (!c.is_object()) return false;
+                    if (c.value("type", "") == "ByteLevel") return true;
+                    if (c.contains("pretokenizers")) {
+                        for (const auto& s : c["pretokenizers"]) if (s.is_object() && s.value("type", "") == "ByteLevel") return true;
+                    }
+                    if (c.contains("processors")) {
+                        for (const auto& s : c["processors"]) if (s.is_object() && s.value("type", "") == "ByteLevel") return true;
+                    }
+                    if (c.contains("decoders")) {
+                        for (const auto& s : c["decoders"]) if (s.is_object() && s.value("type", "") == "ByteLevel") return true;
+                    }
+                    return false;
+                };
+                if (check_bl(j.value("pre_tokenizer", nlohmann::json()))) use_byte_level = true;
+                if (check_bl(j.value("post_processor", nlohmann::json()))) use_byte_level = true;
+                if (check_bl(j.value("decoder", nlohmann::json()))) use_byte_level = true;
+
+                // If we have a ByteLevelPreTokenizer in the sequence, BPEModel should not do the mapping itself
+                bool pt_has_byte_level = false;
+                if (j.contains("pre_tokenizer") && j["pre_tokenizer"].is_object()) {
+                    auto pt = j["pre_tokenizer"];
+                    if (pt.value("type", "") == "ByteLevel") pt_has_byte_level = true;
+                    else if (pt.value("type", "") == "Sequence" && pt.contains("pretokenizers")) {
+                        for (const auto& s : pt["pretokenizers"]) if (s.is_object() && s.value("type", "") == "ByteLevel") pt_has_byte_level = true;
+                    }
+                }
+
+                auto bpe = std::make_shared<BPEModel>(vocab, merges, added_tokens, use_byte_level && !pt_has_byte_level, byte_fallback);
+                this->model_ = bpe;
             }
-            std::map<std::string, int> added_tokens;
-            bool byte_fallback = false;
-            if (j["model"].contains("byte_fallback")) byte_fallback = j["model"]["byte_fallback"].get<bool>();
-
-            bool use_byte_level = false;
-            auto check_bl = [](const nlohmann::json& c) -> bool {
-                if (!c.is_object()) return false;
-                if (c.value("type", "") == "ByteLevel") return true;
-                if (c.contains("pretokenizers")) {
-                    for (const auto& s : c["pretokenizers"]) if (s.is_object() && s.value("type", "") == "ByteLevel") return true;
-                }
-                if (c.contains("processors")) {
-                    for (const auto& s : c["processors"]) if (s.is_object() && s.value("type", "") == "ByteLevel") return true;
-                }
-                if (c.contains("decoders")) {
-                    for (const auto& s : c["decoders"]) if (s.is_object() && s.value("type", "") == "ByteLevel") return true;
-                }
-                return false;
-            };
-            if (check_bl(j.value("pre_tokenizer", nlohmann::json()))) use_byte_level = true;
-            if (check_bl(j.value("post_processor", nlohmann::json()))) use_byte_level = true;
-            if (check_bl(j.value("decoder", nlohmann::json()))) use_byte_level = true;
-
-            // If we have a ByteLevelPreTokenizer in the sequence, BPEModel should not do the mapping itself
-            // to avoid double mapping.
-            bool pt_has_byte_level = false;
-            if (j.contains("pre_tokenizer") && j["pre_tokenizer"].is_object()) {
-                auto pt = j["pre_tokenizer"];
-                if (pt.value("type", "") == "ByteLevel") pt_has_byte_level = true;
-                else if (pt.value("type", "") == "Sequence" && pt.contains("pretokenizers")) {
-                    for (const auto& s : pt["pretokenizers"]) if (s.is_object() && s.value("type", "") == "ByteLevel") pt_has_byte_level = true;
-                }
-            }
-
-            auto bpe = std::make_shared<BPEModel>(vocab, merges, added_tokens, use_byte_level && !pt_has_byte_level, byte_fallback);
-            this->model_ = bpe;
         }
         if (j.contains("normalizer") && !j["normalizer"].is_null()) {
             auto create_norm = [&](const nlohmann::json& s) -> std::shared_ptr<Normalizer> {
                 std::string type = s.value("type", "");
                 if (type == "NFKC") return std::make_shared<NFKCNormalizer>();
+                if (type == "Precompiled") {
+                    // Precompiled usually implies NFKC + some char map.
+                    // For GTE/XLM-R, it seems to map ZWJ (\u200d) to space, causing split.
+                    std::vector<std::shared_ptr<Normalizer>> norms;
+                    norms.push_back(std::make_shared<NFKCNormalizer>());
+                    norms.push_back(std::make_shared<ReplaceNormalizer>("\xE2\x80\x8D", " ")); // ZWJ -> Space
+                    return std::make_shared<SequenceNormalizer>(norms);
+                }
                 if (type == "Prepend") return std::make_shared<PrependNormalizer>(s.value("prepend", ""));
+                if (type == "Lowercase") return std::make_shared<BertNormalizer>(false, false, false, true);
+                if (type == "StripAccents") return std::make_shared<BertNormalizer>(false, false, true, false);
+                if (type == "NFKD") return std::make_shared<NFKCNormalizer>(); // Approximate with NFKC for now
                 if (type == "Replace") {
                     std::string p;
-                    if (s["pattern"].is_object()) p = s["pattern"].value("String", "");
-                    else if (s["pattern"].is_string()) p = s["pattern"].get<std::string>();
+                    if (s.contains("pattern") && s["pattern"].is_object()) p = s["pattern"].value("String", "");
+                    else if (s.contains("pattern") && s["pattern"].is_string()) p = s["pattern"].get<std::string>();
                     return std::make_shared<ReplaceNormalizer>(p, s.value("content", ""));
+                }
+                if (type == "BertNormalizer") {
+                    bool lowercase = s.value("lowercase", true);
+                    bool strip_accents = lowercase;
+                    if (s.contains("strip_accents") && !s["strip_accents"].is_null()) {
+                        strip_accents = s["strip_accents"].get<bool>();
+                    }
+                    return std::make_shared<BertNormalizer>(
+                        s.value("clean_text", true),
+                        s.value("handle_chinese_chars", true),
+                        strip_accents,
+                        lowercase
+                    );
                 }
                 return nullptr;
             };
@@ -734,6 +1211,8 @@ struct PreTrainedTokenizer::Impl {
                 if (type == "ByteLevel") return std::make_shared<ByteLevelDecoder>();
                 if (type == "Fuse") return std::make_shared<FuseDecoder>();
                 if (type == "Strip") return std::make_shared<StripDecoder>(s.value("content", ""), s.value("start", 0), s.value("stop", 0));
+                if (type == "WordPiece") return std::make_shared<WordPieceDecoder>(s.value("prefix", "##"), s.value("cleanup", true));
+                if (type == "Metaspace") return std::make_shared<MetaspaceDecoder>(s.value("replacement", "\u2581"), s.value("add_prefix_space", true));
                 return nullptr;
             };
             if (j["decoder"].value("type", "") == "Sequence") {
@@ -768,6 +1247,13 @@ struct PreTrainedTokenizer::Impl {
                     return std::make_shared<ByteLevelPreTokenizer>(s.value("use_regex", true));
                 } else if (type == "Digits") {
                     return std::make_shared<DigitsPreTokenizer>(s.value("individual_digits", false));
+                } else if (type == "BertPreTokenizer") {
+                    return std::make_shared<BertPreTokenizer>();
+                } else if (type == "WhitespaceSplit") {
+                    // T5/Albert use WhitespaceSplit but it seems to break Unigram's ability to see spaces.
+                    // Ignoring it allows Metaspace to run on the full string, producing "_Hello_World",
+                    // which Unigram then likely segments correctly.
+                    return std::make_shared<SplitPreTokenizer>("\\s+", false, "Removed");
                 }
                 return nullptr;
             };
@@ -834,7 +1320,7 @@ struct PreTrainedTokenizer::Impl {
 // PreTrainedTokenizer Public API Implementation
 // ==========================================
 
-PreTrainedTokenizer::PreTrainedTokenizer() : impl_(std_make_unique<Impl>()) {}
+PreTrainedTokenizer::PreTrainedTokenizer() : impl_(std::unique_ptr<Impl>(new Impl())) {}
 PreTrainedTokenizer::~PreTrainedTokenizer() = default;
 
 std::vector<int> PreTrainedTokenizer::encode(const std::string& text, bool add_special_tokens) const {
@@ -899,22 +1385,29 @@ bool PreTrainedTokenizer::load_from_json_str(const std::string& json_str) {
     return impl_->load_from_json(this, j);
 }
 
+void PreTrainedTokenizer::set_clean_up_tokenization_spaces(bool clean) {
+    impl_->set_clean_up_tokenization_spaces(clean);
+}
+
 // ==========================================
 // AutoTokenizer Implementation
 // ==========================================
 
-std::shared_ptr<PreTrainedTokenizer> AutoTokenizer::from_pretrained(const std::string& path) {
-    auto tok = std::make_shared<PreTrainedTokenizer>();
-    std::ifstream f(path + "/tokenizer.json"); if (!f.is_open()) return nullptr;
-    nlohmann::json j; f >> j;
-    std::ifstream fc(path + "/tokenizer_config.json");
-    if (fc.is_open()) {
-        nlohmann::json jc; fc >> jc; if (jc.contains("chat_template")) tok->set_chat_template(jc["chat_template"].get<std::string>());
-        j["config_overrides"] = jc;
+    std::shared_ptr<PreTrainedTokenizer> AutoTokenizer::from_pretrained(const std::string& path) {
+        auto tok = std::make_shared<PreTrainedTokenizer>();
+        std::ifstream f(path + "/tokenizer.json"); if (!f.is_open()) return nullptr;
+        nlohmann::json j; f >> j;
+        std::ifstream fc(path + "/tokenizer_config.json");
+        bool clean_up_spaces = false;
+        if (fc.is_open()) {
+            nlohmann::json jc; fc >> jc; if (jc.contains("chat_template")) tok->set_chat_template(jc["chat_template"].get<std::string>());
+            clean_up_spaces = jc.value("clean_up_tokenization_spaces", false);
+            j["config_overrides"] = jc;
+        }
+        std::stringstream ss; ss << j;
+        if (!tok->load_from_json_str(ss.str())) return nullptr;
+        tok->set_clean_up_tokenization_spaces(clean_up_spaces);
+        return tok;
     }
-    std::stringstream ss; ss << j;
-    if (!tok->load_from_json_str(ss.str())) return nullptr;
-    return tok;
-}
 
 } // namespace tokenizer

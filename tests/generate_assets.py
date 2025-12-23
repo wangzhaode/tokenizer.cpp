@@ -15,7 +15,6 @@ TARGET_MODELS = [
     "Qwen/Qwen2.5-Omni-3B",
     "Qwen/Qwen2.5-7B-Instruct-1M",
     "Qwen/Qwen2.5-Math-7B-Instruct",
-    # "Qwen/Qwen2.5-Coder-7B-Instruct",
     "Qwen/QwQ-32B",
     "Qwen/Qwen3-4B",
     "Qwen/Qwen3-4B-Instruct-2507",
@@ -23,7 +22,6 @@ TARGET_MODELS = [
     "Qwen/Qwen3-VL-4B-Instruct",
     "Qwen/Qwen3-VL-4B-Thinking",
     "Qwen/Qwen3Guard-Gen-4B",
-    # "Qwen/Qwen3Guard-Stream-4B",
     "Qwen/Qwen3-Coder-30B-A3B-Instruct",
     "Qwen/Qwen3-Omni-30B-A3B-Instruct",
     "Qwen/Qwen3-Omni-30B-A3B-Thinking",
@@ -35,7 +33,6 @@ TARGET_MODELS = [
     "HuggingFaceTB/SmolLM-135M-Instruct",
     "HuggingFaceTB/SmolVLM-256M-Instruct",
     "HuggingFaceTB/SmolLM2-135M-Instruct",
-    # "HuggingFaceTB/SmolVLM2-256M-Video-Instruct",
     "HuggingFaceTB/SmolLM3-3B",
     "google/gemma-3-4b-it",
     "google/gemma-3n-E4B-it",
@@ -47,14 +44,15 @@ TARGET_MODELS = [
     "LLM-Research/Phi-3.5-vision-instruct",
     "LLM-Research/phi-4",
     "LLM-Research/Phi-4-mini-reasoning",
-    # # 2. WordPiece Tokenizer Models
-    # "google-bert/bert-base-uncased",
-    # "google-bert/bert-base-multilingual-cased",
-    # "AI-ModelScope/bge-large-zh",
-    # "iic/gte_sentence-embedding_multilingual-base",
-    # "iic/gte-multilingual-reranker-base",
-    # # 3. Unigram Tokenzier Models
-    # "AI-ModelScope/t5-small",
+    # 2. WordPiece Tokenizer Models
+    "google-bert/bert-base-uncased",
+    "google-bert/bert-base-multilingual-cased",
+    "AI-ModelScope/bge-large-zh",
+    "iic/gte_sentence-embedding_multilingual-base",
+    "iic/gte-multilingual-reranker-base",
+    # 3. Unigram Tokenzier Models
+    "AI-ModelScope/t5-small",
+    "Xenova/albert-base-v2"
 ]
 
 CONFIG_FILES = [
@@ -362,6 +360,7 @@ def generate_test_cases(tokenizer, output_dir):
                     "ids_raw": enc_raw["input_ids"],
                     "tokens_raw": tokens_raw,
                     "ids_full": enc_full["input_ids"],
+                    "decoded_full": tokenizer.decode(enc_full["input_ids"], skip_special_tokens=True),
                 }
 
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")

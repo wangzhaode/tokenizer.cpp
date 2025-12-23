@@ -58,6 +58,9 @@ public:
     // --- Loading ---
     bool load_from_json_str(const std::string& json_content);
 
+    // --- Configuration ---
+    void set_clean_up_tokenization_spaces(bool clean);
+
 private:
     struct Impl; // Forward declaration
     std::unique_ptr<Impl> impl_;

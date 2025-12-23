@@ -142,7 +142,11 @@ bool run_basic_test(tokenizer::PreTrainedTokenizer* tok, const json& test_case, 
 
     // 2. 测试 Decode
     std::string decoded_text = tok->decode(expected_ids);
-    bool decode_match = (decoded_text == input);
+    std::string expected_decode = input;
+    if (test_case.contains("decoded_full")) {
+        expected_decode = test_case["decoded_full"];
+    }
+    bool decode_match = (decoded_text == expected_decode);
 
     if (ids_match && decode_match) {
         return true;
@@ -162,7 +166,8 @@ bool run_basic_test(tokenizer::PreTrainedTokenizer* tok, const json& test_case, 
 
             if (!decode_match) {
                 std::cout << Color::RED << "     ├── Decode Mismatch ❌" << Color::RESET << std::endl;
-                std::cout << Color::GREY << "     │ Decoded: " << Color::RESET << "#" << visualize(decoded_text) << "#" << std::endl;
+                std::cout << Color::GREY << "     │ Expected: " << Color::RESET << "#" << visualize(expected_decode) << "#" << std::endl;
+                std::cout << Color::GREY << "     │ Decoded:  " << Color::RESET << "#" << visualize(decoded_text) << "#" << std::endl;
             }
 
             std::cout << Color::GREY << "     └──────────────────────────────────────────────────" << Color::RESET << std::endl;
