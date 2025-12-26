@@ -1065,7 +1065,6 @@ struct PreTrainedTokenizer::Impl {
                 }
             }
         }
-        if (add_special_tokens && special_tokens_.eos != -1) input_ids.push_back(special_tokens_.eos);
         return input_ids;
     }
 
