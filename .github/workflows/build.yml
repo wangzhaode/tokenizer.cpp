@@ -36,11 +36,12 @@ jobs:
 
   build-and-test:
     needs: generate-data
-    runs-on: ubuntu-latest
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest, ubuntu-24.04-arm64]
         ujson_use_rapidjson: ["OFF", "ON"]
-    name: build-test (RapidJSON=${{ matrix.ujson_use_rapidjson }})
+    runs-on: ${{ matrix.os }}
+    name: build-test (${{ matrix.os }}, RapidJSON=${{ matrix.ujson_use_rapidjson }})
     steps:
     - uses: actions/checkout@v3
       with:
@@ -52,19 +53,26 @@ jobs:
         name: models
         path: tests/models/
 
-    - name: Install build dependencies
+    - name: Install build dependencies (Linux)
+      if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake g++
 
+    - name: Configure
+      run: |
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DUJSON_USE_RAPIDJSON=${{ matrix.ujson_use_rapidjson }}
+
     - name: Build
       run: |
-        mkdir build
-        cd build
-        cmake .. -DCMAKE_BUILD_TYPE=Release -DUJSON_USE_RAPIDJSON=${{ matrix.ujson_use_rapidjson }}
-        make -j$(nproc)
+        cmake --build build --config Release -j 4
 
     - name: Run Tests
+      shell: bash
       run: |
         cd build
-        ./test_main
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          ./Release/test_main
+        else
+          ./test_main
+        fi
