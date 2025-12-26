@@ -33,6 +33,7 @@ set(SOURCES
 add_library(tokenizer_lib STATIC ${SOURCES})
 target_include_directories(tokenizer_lib PUBLIC include third_party)
 target_link_libraries(tokenizer_lib onig)
+target_compile_definitions(tokenizer_lib PUBLIC UTF8PROC_STATIC)
 
 # Executable for testing
 add_executable(test_main tests/test_main.cpp)
