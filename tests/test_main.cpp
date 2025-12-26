@@ -1,3 +1,9 @@
+#ifdef _MSC_VER
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+#endif
+
 /**
  * test_main.cpp - Tokenizer Test
  *
@@ -12,7 +18,12 @@
 #include <string>
 #include <vector>
 #include <iomanip>
+#include <algorithm>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <dirent.h>
+#endif
 #include <sys/stat.h>
 #include <chrono>
 #include "tokenizer.hpp"
@@ -105,6 +116,24 @@ std::string visualize(const std::string& input) {
 
 std::vector<std::string> list_model_dirs(const std::string& models_path) {
     std::vector<std::string> dirs;
+#ifdef _WIN32
+    std::string search_path = models_path + "/*";
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(search_path.c_str(), &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                std::string name = fd.cFileName;
+                if (name != "." && name != "..") {
+                    dirs.push_back(name);
+                }
+            }
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    } else {
+        std::cerr << Color::RED << "❌ Cannot open models directory: " << models_path << Color::RESET << std::endl;
+    }
+#else
     DIR* dir = opendir(models_path.c_str());
     if (!dir) {
         std::cerr << Color::RED << "❌ Cannot open models directory: " << models_path << Color::RESET << std::endl;
@@ -123,7 +152,7 @@ std::vector<std::string> list_model_dirs(const std::string& models_path) {
         }
     }
     closedir(dir);
-
+#endif
     std::sort(dirs.begin(), dirs.end());
     return dirs;
 }

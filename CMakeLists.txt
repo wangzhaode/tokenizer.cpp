@@ -8,6 +8,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include_directories(include)
 include_directories(third_party)
 
+if(MSVC)
+    add_compile_options(/utf-8)
+    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+endif()
+
 option(UJSON_USE_RAPIDJSON "Use RapidJSON backend" OFF)
 if(UJSON_USE_RAPIDJSON)
     add_definitions(-DUJSON_USE_RAPIDJSON)
@@ -30,6 +35,5 @@ target_include_directories(tokenizer_lib PUBLIC include third_party)
 target_link_libraries(tokenizer_lib onig)
 
 # Executable for testing
-# We link against the library now, so test main only needs tokenizer.hpp
 add_executable(test_main tests/test_main.cpp)
 target_link_libraries(test_main tokenizer_lib)

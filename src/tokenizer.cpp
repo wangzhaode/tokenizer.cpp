@@ -1,3 +1,9 @@
+#ifdef _MSC_VER
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+#endif
+
 #include "tokenizer.hpp"
 #include <set>
 #include <algorithm>
@@ -13,6 +19,12 @@
 #include "ujson.hpp"
 #include "jinja.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <basetsd.h>
+typedef SSIZE_T ssize_t;
+#endif
+
 namespace tokenizer {
 
 using json = ujson::json;
@@ -21,7 +33,7 @@ using json = ujson::json;
 // C++11 Polyfills
 // ==========================================
 template<typename T, typename... Args>
-std::unique_ptr<T> std_make_unique(Args&&... args) {
+std::unique_ptr<T> tokenizer_make_unique(Args&&... args) {
     return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 }
 
@@ -403,7 +415,7 @@ public:
     bool invert_;
     std::string behavior_;
     SplitPreTokenizer(const std::string& pattern, bool invert, const std::string& behavior = "Isolated")
-        : regex_(std_make_unique<OnigRegex>(pattern)), invert_(invert), behavior_(behavior) {}
+        : regex_(tokenizer_make_unique<OnigRegex>(pattern)), invert_(invert), behavior_(behavior) {}
     void pre_tokenize(PreTokenizedString& pts) const override {
         if (!regex_ || !regex_->is_valid()) return;
         std::vector<std::string> new_splits;
