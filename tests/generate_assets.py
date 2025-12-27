@@ -408,71 +408,84 @@ def generate_test_cases(tokenizer, output_dir):
             except Exception as e:
                 print(f"    ⚠️ Chat Case Error '{chat_case['name']}': {e}")
 
-def process_tokenizers():
-    print(f"🚀 开始处理 Tokenizer 数据与测试集 (共 {len(TARGET_MODELS)} 个模型)\n")
+import concurrent.futures
 
-    for idx, model_id in enumerate(TARGET_MODELS, 1):
-        folder_name = model_id.split("/")[-1]
-        local_dir = os.path.join(SAVE_ROOT, folder_name)
-        os.makedirs(local_dir, exist_ok=True)
+def process_single_model(idx, model_id, total_count):
+    folder_name = model_id.split("/")[-1]
+    local_dir = os.path.join(SAVE_ROOT, folder_name)
+    os.makedirs(local_dir, exist_ok=True)
 
-        print(f"[{idx}/{len(TARGET_MODELS)}] 处理: {model_id}")
+    log_prefix = f"[{idx}/{total_count}] {model_id}"
+    print(f"{log_prefix} -> Start processing...")
 
-        # --- 步骤 1: 下载 Config 文件 ---
-        for filename in CONFIG_FILES:
-            try:
-                cached_path = model_file_download(model_id=model_id, file_path=filename, revision='master')
-                shutil.copy(cached_path, os.path.join(local_dir, filename))
-            except Exception:
-                pass
-
-        # --- 步骤 2: 准备 tokenizer.json ---
-        target_json_path = os.path.join(local_dir, "tokenizer.json")
-        json_ready = False
-
-        # 2.1 尝试直接下载
+    # --- 步骤 1: 下载 Config 文件 ---
+    for filename in CONFIG_FILES:
         try:
-            cached_path = model_file_download(model_id=model_id, file_path="tokenizer.json", revision='master')
-            shutil.copy(cached_path, target_json_path)
-            # print(f"  ✅ [Download] tokenizer.json")
-            json_ready = True
+            cached_path = model_file_download(model_id=model_id, file_path=filename, revision='master')
+            shutil.copy(cached_path, os.path.join(local_dir, filename))
         except Exception:
             pass
 
-        # 2.2 下载失败则转换 (针对 BERT 等只有 vocab.txt 的模型)
-        if not json_ready:
-            try:
-                print(f"  🔄 [Convert] 正在从原始模型转换 Fast Tokenizer...")
-                # trust_remote_code=True 允许执行模型仓库里的 Python 代码 (对 Qwen/GLM 必须)
-                temp_tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-                if temp_tokenizer.is_fast:
-                    temp_tokenizer.backend_tokenizer.save(target_json_path)
-                    print(f"  ✅ [Saved] 已生成 tokenizer.json")
-                    json_ready = True
-                else:
-                    print(f"  ❌ [Error] 模型不支持 Fast Tokenizer")
-            except Exception as e:
-                print(f"  ❌ [Error] 转换失败: {str(e)[:100]}")
+    # --- 步骤 2: 准备 tokenizer.json ---
+    target_json_path = os.path.join(local_dir, "tokenizer.json")
+    json_ready = False
 
-        # --- 步骤 3: 重新加载本地模型并生成测试用例 ---
-        if json_ready:
-            try:
-                # 关键：从【本地目录】加载 Tokenizer
-                # 这样保证生成的测试数据与磁盘上的 tokenizer.json 绝对一致
-                # 避免内存中的 tokenizer 与磁盘文件版本不一致的情况
-                local_tokenizer = AutoTokenizer.from_pretrained(local_dir, trust_remote_code=True)
+    # 2.1 尝试直接下载
+    try:
+        cached_path = model_file_download(model_id=model_id, file_path="tokenizer.json", revision='master')
+        shutil.copy(cached_path, target_json_path)
+        json_ready = True
+    except Exception:
+        pass
 
-                # 生成测试数据
-                generate_test_cases(local_tokenizer, local_dir)
+    # 2.2 下载失败则转换 (针对 BERT 等只有 vocab.txt 的模型)
+    if not json_ready:
+        try:
+            print(f"{log_prefix} -> 🔄 Converting to Fast Tokenizer...")
+            # trust_remote_code=True 允许执行模型仓库里的 Python 代码 (对 Qwen/GLM 必须)
+            temp_tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+            if temp_tokenizer.is_fast:
+                temp_tokenizer.backend_tokenizer.save(target_json_path)
+                print(f"{log_prefix} -> ✅ Saved tokenizer.json")
+                json_ready = True
+            else:
+                print(f"{log_prefix} -> ❌ Error: Model does not support Fast Tokenizer")
+        except Exception as e:
+            print(f"{log_prefix} -> ❌ Conversion failed: {str(e)[:100]}")
 
-            except Exception as e:
-                print(f"  ❌ [Error] 本地加载或生成测试失败: {e}")
-        else:
-            # 清理无效目录
-            if os.path.exists(local_dir) and not os.listdir(local_dir):
-                os.rmdir(local_dir)
+    # --- 步骤 3: 重新加载本地模型并生成测试用例 ---
+    if json_ready:
+        try:
+            # 关键：从【本地目录】加载 Tokenizer
+            # 这样保证生成的测试数据与磁盘上的 tokenizer.json 绝对一致
+            local_tokenizer = AutoTokenizer.from_pretrained(local_dir, trust_remote_code=True)
 
-        print("-" * 40)
+            # 生成测试数据
+            generate_test_cases(local_tokenizer, local_dir)
+            print(f"{log_prefix} -> 🎉 Done!")
+
+        except Exception as e:
+            print(f"{log_prefix} -> ❌ Local load/generation failed: {e}")
+    else:
+        # 清理无效目录
+        if os.path.exists(local_dir) and not os.listdir(local_dir):
+            os.rmdir(local_dir)
+
+def process_tokenizers():
+    total_count = len(TARGET_MODELS)
+    print(f"🚀 开始并行处理 Tokenizer 数据与测试集 (共 {total_count} 个模型)\n")
+
+    # 使用根据 CPU 核心数决定的 worker 数量，但在 CI 环境中（通常 2-4 核）可以适当提高以掩盖 IO 延迟
+    # 这里设置为 8，因为主要的瓶颈是网络 IO
+    max_workers = 8
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for idx, model_id in enumerate(TARGET_MODELS, 1):
+            futures.append(executor.submit(process_single_model, idx, model_id, total_count))
+
+        # 等待所有任务完成
+        concurrent.futures.wait(futures)
 
     print(f"\n🎉 全部完成! 数据保存在: {os.path.abspath(SAVE_ROOT)}")
 
