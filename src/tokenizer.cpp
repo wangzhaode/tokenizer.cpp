@@ -16,6 +16,7 @@
 #include <oniguruma.h>
 #include <utf8proc/utf8proc.h>
 #include <iostream>
+#include <mutex>
 #include "ujson.hpp"
 #include "jinja.hpp"
 
@@ -109,7 +110,7 @@ static std::string get_token_content(const json& j) {
     return "";
 }
 
-static std::unordered_map<unsigned char, std::string> create_bytes_char_map() {
+static std::vector<std::string> create_bytes_char_map() {
     auto u2u = [](int cp) -> std::string {
         std::string out;
         if (cp <= 0x7F) out += (char)cp;
@@ -117,13 +118,15 @@ static std::unordered_map<unsigned char, std::string> create_bytes_char_map() {
         else if (cp <= 0xFFFF) { out += (char)(0xE0 | (cp >> 12)); out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F)); }
         return out;
     };
-    std::unordered_map<unsigned char, std::string> bs;
-    for (int b = 33; b <= 126; ++b) bs[(unsigned char)b] = u2u(b);
-    for (int b = 161; b <= 172; ++b) bs[(unsigned char)b] = u2u(b);
-    for (int b = 174; b <= 255; ++b) bs[(unsigned char)b] = u2u(b);
+    std::vector<std::string> bs(256);
+    std::unordered_map<unsigned char, std::string> temp_bs;
+    for (int b = 33; b <= 126; ++b) temp_bs[(unsigned char)b] = u2u(b);
+    for (int b = 161; b <= 172; ++b) temp_bs[(unsigned char)b] = u2u(b);
+    for (int b = 174; b <= 255; ++b) temp_bs[(unsigned char)b] = u2u(b);
     int n = 0;
     for (int b = 0; b < 256; ++b) {
-        if (bs.find((unsigned char)b) == bs.end()) bs[(unsigned char)b] = u2u(256 + n++);
+        if (temp_bs.find((unsigned char)b) == temp_bs.end()) temp_bs[(unsigned char)b] = u2u(256 + n++);
+        bs[b] = temp_bs[(unsigned char)b];
     }
     return bs;
 }
@@ -499,12 +502,23 @@ public:
 
 // Moved create_bytes_char_map up
 
+struct PairHash {
+    inline size_t operator()(const std::pair<int, int>& v) const {
+        // IntPairHash from boost (simplified)
+        size_t seed = 0;
+        seed ^= std::hash<int>{}(v.first) + 0x9e3779b9 + (seed<<6) + (seed>>2);
+        seed ^= std::hash<int>{}(v.second) + 0x9e3779b9 + (seed<<6) + (seed>>2);
+        return seed;
+    }
+};
+
 class BPEModel : public Model {
 public:
     bool use_byte_level_;
     std::unordered_map<std::string, int> vocab_;
     std::unordered_map<int, std::string> id_to_token_;
-    std::map<std::pair<int, int>, int> merges_;
+    std::unordered_map<std::pair<int, int>, int, PairHash> merges_;
+    mutable std::mutex cache_mutex_;
     mutable std::unordered_map<std::string, std::vector<int>> cache_;
 
     BPEModel(const std::map<std::string, int>& vocab,
@@ -529,8 +543,12 @@ public:
 
     std::vector<int> tokenize(const std::string& text) const override {
         if (text.empty()) return {};
-        auto cit = cache_.find(text);
-        if (cit != cache_.end()) return cit->second;
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex_);
+            auto cit = cache_.find(text);
+            if (cit != cache_.end()) return cit->second;
+        }
+
         std::vector<int> out;
         if (use_byte_level_) {
             static auto byte_map = create_bytes_char_map();
@@ -572,7 +590,10 @@ public:
             int nid = token_to_id(m); if (nid == -1) break;
             out[best] = nid; out.erase(out.begin() + best + 1);
         }
-        cache_[text] = out;
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex_);
+            cache_[text] = out;
+        }
         return out;
     }
 
@@ -874,7 +895,10 @@ public:
     void decode(std::vector<std::string>& tokens) const override {
         static auto bm = []() {
             std::unordered_map<std::string, unsigned char> m;
-            for (const auto& p : create_bytes_char_map()) m[p.second] = p.first;
+            auto byte_vec = create_bytes_char_map();
+            for (int i = 0; i < 256; ++i) {
+                if (!byte_vec[i].empty()) m[byte_vec[i]] = (unsigned char)i;
+            }
             return m;
         }();
         for (auto& t : tokens) {
