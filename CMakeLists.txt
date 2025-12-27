@@ -38,3 +38,7 @@ target_compile_definitions(tokenizer_lib PUBLIC UTF8PROC_STATIC)
 # Executable for testing
 add_executable(test_main tests/test_main.cpp)
 target_link_libraries(test_main tokenizer_lib)
+
+# Simple test executable
+add_executable(test_simple tests/test_simple.cpp)
+target_link_libraries(test_simple tokenizer_lib)
