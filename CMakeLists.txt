@@ -4,6 +4,14 @@ project(tokenizer LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(ENABLE_COVERAGE "Enable code coverage" OFF)
+if(ENABLE_COVERAGE)
+    if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" OR "${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
+        add_compile_options(--coverage)
+        add_link_options(--coverage)
+    endif()
+endif()
+
 # Include directories
 include_directories(include)
 include_directories(third_party)

@@ -61,18 +61,34 @@ jobs:
 
     - name: Configure
       run: |
-        cmake -B build -DCMAKE_BUILD_TYPE=Release -DUJSON_USE_RAPIDJSON=${{ matrix.ujson_use_rapidjson }}
+        cmake -B build -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON -DUJSON_USE_RAPIDJSON=${{ matrix.ujson_use_rapidjson }}
 
     - name: Build
       run: |
-        cmake --build build --config Release -j 4
+        cmake --build build --config Debug -j 4
 
     - name: Run Tests
       shell: bash
       run: |
         cd build
         if [[ "${{ runner.os }}" == "Windows" ]]; then
-          ./Release/test_main
+          ./Debug/test_main
         else
           ./test_main
         fi
+
+    - name: Collect Coverage (Linux/Mac)
+      if: runner.os != 'Windows'
+      run: |
+        # 创建覆盖率存放目录
+        mkdir -p coverage_data
+        # 查找所有生成的 .gcda 和 .gcno 文件并复制（保持目录结构平铺或打包）
+        find build -name "*.gcda" -exec cp {} coverage_data/ \;
+        find build -name "*.gcno" -exec cp {} coverage_data/ \;
+
+    - name: Upload Coverage Artifacts
+      if: runner.os != 'Windows'
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-${{ matrix.os }}-${{ matrix.ujson_use_rapidjson }}
+        path: coverage_data/
